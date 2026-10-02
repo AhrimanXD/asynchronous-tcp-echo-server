@@ -28,7 +28,7 @@ Two kinds of task run in the loop:
 | Task | Role |
 | --- | --- |
 | `async_server()` | Accepts new connections and spawns a `handle_client` task for each. |
-| `handle_client(conn, addr)` | Echoes back whatever the client sends. It closes the connection on EOF or `ConnectionResetError`. |
+| `handle_client(conn, addr)` | Echoes back whatever the client sends. It closes the connection on EOF or any socket error. |
 
 ## Files
 
@@ -66,11 +66,11 @@ Open several clients at once. A single server process handles all of them concur
 
 This is a learning project, not production code.
 
-- Only read readiness is tracked. `conn.send()` is assumed not to block, so there's no write buffering.
+- Tasks wait for read or write readiness. Large replies are sent in chunks, pausing when the socket is full.
 - Every `selector.register`/`unregister` cycle happens on each wake-up, which is simple but not efficient.
 - The server prints each received message to stdout.
-- `client.py` sets `SO_LINGER` to 0, so closing the client sends a TCP RST. The server handles this through its `ConnectionResetError` branch.
-- There is no graceful shutdown. Stop the server with `Ctrl+C`.
+- Dropped connections (resets, broken pipes) are handled by closing that client without affecting others.
+- Stop the server with `Ctrl+C`.
 
 ## License
 

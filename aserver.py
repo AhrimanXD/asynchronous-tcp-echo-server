@@ -1,67 +1,84 @@
 from collections import deque
-import socket
 import selectors
-
+import socket
 
 selector = selectors.DefaultSelector()
 
-
 ADDRESS = ("127.0.0.1", 65432)
+BUFFER_SIZE = 1024
 
 server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-
+# Lets us restart the server right away without "Address already in use"
+server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 server.bind(ADDRESS)
 server.setblocking(False)
-
 server.listen()
 
 task_queue = deque()
 wait_table = {}
 
 
-def handle_client(conn, addr):
-    while True:
+def send_all(conn, data):
+    """Send every byte, pausing (yielding) whenever the socket is full."""
+    while data:
         try:
-            data = conn.recv(1048)
-            if not data:
-                conn.close()
-                break
-            print(data.decode())
-            conn.send(data)
-
+            sent = conn.send(data)
+            data = data[sent:]
         except BlockingIOError:
-            yield conn.fileno()
-        except ConnectionResetError:
-            print(f"Client with address {addr} disconnected with ConnectionResetError")
-            conn.close()
-            break
+            yield selectors.EVENT_WRITE, conn.fileno()
+
+
+def handle_client(conn, addr):
+    try:
+        while True:
+            try:
+                data = conn.recv(BUFFER_SIZE)
+            except BlockingIOError:
+                yield selectors.EVENT_READ, conn.fileno()
+                continue
+            if not data:
+                break
+            print(f"{addr}: {data.decode(errors='replace')}")
+            yield from send_all(conn, data)
+    except OSError as e:
+        print(f"Client {addr} disconnected: {e!r}")
+    finally:
+        conn.close()
 
 
 def async_server():
     while True:
         try:
             conn, addr = server.accept()
-            conn.setblocking(False)
-            task_queue.append(handle_client(conn, addr))
         except BlockingIOError:
-            yield server.fileno()
-
-
-task_queue.append(async_server())
-
-while True:
-    while len(task_queue) > 0:
-        task = task_queue.popleft()
-        try:
-            fd = next(task)
-        except StopIteration:
+            yield selectors.EVENT_READ, server.fileno()
             continue
+        conn.setblocking(False)
+        task_queue.append(handle_client(conn, addr))
 
-        selector.register(fd, selectors.EVENT_READ)
-        wait_table[fd] = task
-    events = selector.select(None)
-    for key, mask in events:
-        if mask & selectors.EVENT_READ:
-            task_queue.append(wait_table[key.fd])
-            del wait_table[key.fd]
+
+def run():
+    task_queue.append(async_server())
+    while True:
+        while task_queue:
+            task = task_queue.popleft()
+            try:
+                event, fd = next(task)
+            except StopIteration:
+                continue
+            selector.register(fd, event)
+            wait_table[fd] = task
+        for key, _ in selector.select(None):
+            task_queue.append(wait_table.pop(key.fd))
             selector.unregister(key.fd)
+
+
+if __name__ == "__main__":
+    print(f"Listening on {ADDRESS[0]}:{ADDRESS[1]}")
+    try:
+        run()
+    except KeyboardInterrupt:
+        print("\nShutting down")
+    finally:
+        server.close()
+        selector.close()

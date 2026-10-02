@@ -10,3 +10,5 @@ test.py
 __pycache__/
 
 *.pyc
+
+Tutorial.md
